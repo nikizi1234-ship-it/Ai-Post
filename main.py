@@ -199,7 +199,7 @@ class ITNewsBot:
                 chat_id=self.channel_id,
                 text=post_content,
                 parse_mode='Markdown',
-                disable_web_page_preview=False
+                disable_web_page_preview=True,
             )
             
             # Сохраняем ID отправленной статьи
