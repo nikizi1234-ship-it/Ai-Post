@@ -379,7 +379,7 @@ def health():
     except Exception as e:
         return {'status': 'error', 'message': str(e)}, 500
 
-@app.route('/run')
+@app.route('/')
 def run_bot():
     """Основной маршрут для запуска бота (вызывается Cron Job)"""
     global is_running
