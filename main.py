@@ -1,7 +1,6 @@
 import os
 import logging
 import feedparser
-import requests
 from datetime import datetime
 from telegram import Bot
 from telegram.error import TelegramError
@@ -19,7 +18,10 @@ if not BOT_TOKEN or not CHANNEL_ID:
     raise ValueError("Не заданы BOT_TOKEN или CHANNEL_ID.")
 
 # --- Настройка ---
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
 logger = logging.getLogger(__name__)
 app = Flask(__name__)
 
@@ -166,11 +168,6 @@ class ITNewsBot:
         current_date = datetime.now().strftime("%d.%m.%Y")
         date_info = f"\n\n📅 Информация на {current_date}"
 
-        # Добавляем пометку о типе поста (только для логов, не в публикацию)
-        type_marker = ""
-        if post_type == "старая":
-            logger.info("Отправляется старая, но еще не отправленная статья.")
-
         # Формируем финальный пост
         post = f"""📰 {title}
 
@@ -199,7 +196,7 @@ class ITNewsBot:
                 chat_id=self.channel_id,
                 text=post_content,
                 parse_mode='Markdown',
-                disable_web_page_preview=True,
+                disable_web_page_preview=True  # Отключаем предпросмотр ссылки
             )
             
             # Сохраняем ID отправленной статьи
@@ -239,7 +236,8 @@ class ITNewsBot:
             try:
                 await self.bot.send_message(
                     chat_id=self.channel_id,
-                    text=f"⚠️ На {datetime.now().strftime('%d.%m.%Y')} новых IT-новостей не найдено. Следующая проверка через 6 часов."
+                    text=f"⚠️ На {datetime.now().strftime('%d.%m.%Y')} новых IT-новостей не найдено. Следующая проверка через 6 часов.",
+                    disable_web_page_preview=True  # Отключаем предпросмотр
                 )
             except Exception as e:
                 logger.error(f"Ошибка отправки уведомления: {e}")
