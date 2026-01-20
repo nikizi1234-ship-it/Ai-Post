@@ -12,7 +12,6 @@ import re
 import hashlib
 import requests
 import time
-from urllib.parse import urlparse
 
 # --- Конфигурация ---
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
@@ -29,8 +28,111 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 app = Flask(__name__)
 
+# Ключевые слова для фильтрации IT-новостей (русский + английский)
+IT_KEYWORDS = [
+    # Программирование и разработка
+    'программирование', 'разработка', 'код', 'github', 'git', 'api', 'sdk',
+    'programming', 'development', 'code', 'software', 'developer',
+    
+    # Языки программирования
+    'python', 'javascript', 'java', 'c++', 'c#', 'go', 'golang', 'rust',
+    'php', 'ruby', 'swift', 'kotlin', 'typescript', 'html', 'css', 'sql',
+    
+    # Фреймворки и библиотеки
+    'react', 'vue', 'angular', 'django', 'flask', 'spring', 'laravel',
+    'node.js', 'express', 'jquery', 'bootstrap', 'tailwind',
+    
+    # Базы данных
+    'база данных', 'sql', 'nosql', 'mysql', 'postgresql', 'mongodb',
+    'redis', 'elasticsearch', 'database', 'db',
+    
+    # Операционные системы
+    'linux', 'ubuntu', 'debian', 'windows', 'macos', 'ios', 'android',
+    'unix', 'centos', 'fedora',
+    
+    # Инфраструктура и облака
+    'docker', 'kubernetes', 'devops', 'ci/cd', 'aws', 'azure', 'gcp',
+    'cloud', 'облако', 'сервер', 'хостинг', 'vps', 'виртуализация',
+    
+    # Безопасность
+    'безопасность', 'security', 'кибербезопасность', 'hack', 'vulnerability',
+    'уязвимость', 'шифрование', 'encryption', 'firewall',
+    
+    # Искусственный интеллект и данные
+    'искусственный интеллект', 'ai', 'машинное обучение', 'ml',
+    'нейросеть', 'нейронная сеть', 'data science', 'big data',
+    'анализ данных', 'data analysis',
+    
+    # Мобильная разработка
+    'мобильное приложение', 'android', 'ios', 'react native', 'flutter',
+    
+    # Веб-технологии
+    'веб', 'web', 'сайт', 'интернет', 'браузер', 'chrome', 'firefox',
+    'safari', 'http', 'https', 'ssl', 'tls', 'домен', 'хостинг',
+    
+    # Аппаратное обеспечение
+    'процессор', 'cpu', 'gpu', 'видеокарта', 'nvidia', 'amd', 'intel',
+    'оперативная память', 'ram', 'ssd', 'жесткий диск', 'hdd',
+    
+    # ИТ-компании и продукты
+    'microsoft', 'google', 'apple', 'amazon', 'meta', 'facebook',
+    'yandex', 'vk', 'telegram', 'whatsapp', 'discord',
+    
+    # Стандарты и протоколы
+    'json', 'xml', 'rest', 'graphql', 'soap', 'websocket',
+    
+    # Методологии
+    'agile', 'scrum', 'kanban', 'waterfall'
+]
+
+# RSS-ленты строго IT-тематики
+IT_FEEDS = [
+    {
+        'url': 'https://habr.com/ru/rss/hub/programming/',
+        'name': 'Habr Programming',
+        'hashtags': '#Хабр #Программирование #Разработка',
+        'categories': ['Программирование', 'IT']
+    },
+    {
+        'url': 'https://habr.com/ru/rss/hub/infosecurity/',
+        'name': 'Habr Security',
+        'hashtags': '#Хабр #Безопасность #ИнфоСек',
+        'categories': ['Безопасность', 'IT']
+    },
+    {
+        'url': 'https://habr.com/ru/rss/hub/devops/',
+        'name': 'Habr DevOps',
+        'hashtags': '#Хабр #DevOps #Инфраструктура',
+        'categories': ['DevOps', 'IT']
+    },
+    {
+        'url': 'https://www.opennet.ru/opennews/opennews_all.rss',
+        'name': 'OpenNet',
+        'hashtags': '#OpenNet #Linux #OpenSource',
+        'categories': ['Linux', 'Open Source', 'IT']
+    },
+    {
+        'url': 'https://news.ycombinator.com/rss',
+        'name': 'Hacker News',
+        'hashtags': '#HackerNews #Tech #Programming',
+        'categories': ['Technology', 'Programming', 'IT']
+    },
+    {
+        'url': 'https://www.reddit.com/r/programming/.rss',
+        'name': 'Reddit Programming',
+        'hashtags': '#Reddit #Programming #Tech',
+        'categories': ['Programming', 'IT']
+    },
+    {
+        'url': 'https://www.reddit.com/r/linux/.rss',
+        'name': 'Reddit Linux',
+        'hashtags': '#Reddit #Linux #OpenSource',
+        'categories': ['Linux', 'Open Source', 'IT']
+    }
+]
+
 # Настройки базы данных
-DB_NAME = 'news_bot.db'
+DB_NAME = 'it_news_bot.db'
 
 class DatabaseManager:
     """Класс для управления базой данных SQLite"""
@@ -50,130 +152,97 @@ class DatabaseManager:
         with self.get_connection() as conn:
             cursor = conn.cursor()
             
-            # Таблица для хранения отправленных постов
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS sent_posts (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    post_hash TEXT UNIQUE NOT NULL,
+                    content_hash TEXT UNIQUE NOT NULL,
                     title TEXT NOT NULL,
                     link TEXT NOT NULL,
                     source TEXT NOT NULL,
+                    category TEXT,
                     sent_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    content_hash TEXT NOT NULL,
-                    last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    it_score INTEGER DEFAULT 0
                 )
             ''')
             
-            # Таблица для хранения истории источников
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS source_history (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    source TEXT NOT NULL,
-                    article_count INTEGER DEFAULT 0,
-                    last_check TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            ''')
-            
-            # Индексы для ускорения поиска
-            cursor.execute('CREATE INDEX IF NOT EXISTS idx_post_hash ON sent_posts(post_hash)')
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_content_hash ON sent_posts(content_hash)')
-            cursor.execute('CREATE INDEX IF NOT EXISTS idx_last_seen ON sent_posts(last_seen)')
-            cursor.execute('CREATE INDEX IF NOT EXISTS idx_source_link ON sent_posts(source, link)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_it_score ON sent_posts(it_score)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_source ON sent_posts(source)')
             
             conn.commit()
     
     def is_post_sent(self, content_hash):
-        """Проверяет, был ли пост уже отправлен по хэшу контента"""
+        """Проверяет, был ли пост уже отправлен"""
         with self.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute('SELECT id FROM sent_posts WHERE content_hash = ?', (content_hash,))
             return cursor.fetchone() is not None
     
-    def get_post_by_url(self, url):
-        """Получает пост по URL"""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute('SELECT * FROM sent_posts WHERE link = ?', (url,))
-            result = cursor.fetchone()
-            return dict(result) if result else None
-    
-    def mark_post_as_sent(self, post_hash, title, link, source, content_hash):
-        """Помечает пост как отправленный"""
+    def save_post(self, content_hash, title, link, source, category, it_score):
+        """Сохраняет отправленный пост"""
         try:
             with self.get_connection() as conn:
                 cursor = conn.cursor()
                 cursor.execute('''
-                    INSERT OR REPLACE INTO sent_posts 
-                    (post_hash, title, link, source, content_hash, last_seen) 
-                    VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-                ''', (post_hash, title, link, source, content_hash))
+                    INSERT OR IGNORE INTO sent_posts 
+                    (content_hash, title, link, source, category, it_score) 
+                    VALUES (?, ?, ?, ?, ?, ?)
+                ''', (content_hash, title, link, source, category, it_score))
                 conn.commit()
                 return cursor.lastrowid
         except Exception as e:
-            logger.error(f"Ошибка при сохранении поста в БД: {e}")
+            logger.error(f"Ошибка при сохранении поста: {e}")
             return None
     
-    def update_source_stats(self, source, count):
-        """Обновляет статистику источника"""
-        try:
-            with self.get_connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute('''
-                    INSERT OR REPLACE INTO source_history 
-                    (source, article_count, last_check) 
-                    VALUES (?, ?, CURRENT_TIMESTAMP)
-                ''', (source, count))
-                conn.commit()
-        except Exception as e:
-            logger.error(f"Ошибка при обновлении статистики источника: {e}")
+    def get_stats(self):
+        """Возвращает статистику"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            
+            # Общая статистика
+            cursor.execute('SELECT COUNT(*) as total FROM sent_posts')
+            total = cursor.fetchone()['total']
+            
+            # Статистика по источникам
+            cursor.execute('''
+                SELECT source, COUNT(*) as count 
+                FROM sent_posts 
+                GROUP BY source 
+                ORDER BY count DESC
+            ''')
+            sources = cursor.fetchall()
+            
+            # Статистика по категориям
+            cursor.execute('''
+                SELECT category, COUNT(*) as count 
+                FROM sent_posts 
+                WHERE category IS NOT NULL 
+                GROUP BY category 
+                ORDER BY count DESC
+            ''')
+            categories = cursor.fetchall()
+            
+            return {
+                'total': total,
+                'sources': [dict(row) for row in sources],
+                'categories': [dict(row) for row in categories]
+            }
     
-    def get_unsent_articles(self, articles, limit=5):
-        """Возвращает неотправленные статьи из списка"""
-        unsent = []
-        for article in articles[:limit]:
-            if not self.is_post_sent(article['content_hash']):
-                unsent.append(article)
-        return unsent
-    
-    def cleanup_old_posts(self, days_to_keep=90):
-        """Удаляет старые записи (для поддержания размера БД)"""
+    def cleanup_old_posts(self, days_to_keep=60):
+        """Удаляет старые записи"""
         try:
             with self.get_connection() as conn:
                 cursor = conn.cursor()
                 cursor.execute('''
                     DELETE FROM sent_posts 
-                    WHERE last_seen < datetime('now', ?)
+                    WHERE sent_date < datetime('now', ?)
                 ''', (f'-{days_to_keep} days',))
-                deleted_count = cursor.rowcount
+                deleted = cursor.rowcount
                 conn.commit()
-                
-                if deleted_count > 0:
-                    logger.info(f"Удалено {deleted_count} старых записей из БД")
-                return deleted_count
+                return deleted
         except Exception as e:
             logger.error(f"Ошибка при очистке старых постов: {e}")
             return 0
-    
-    def get_total_sent_posts(self):
-        """Возвращает общее количество отправленных постов"""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute('SELECT COUNT(*) as count FROM sent_posts')
-            result = cursor.fetchone()
-            return result['count'] if result else 0
-    
-    def get_stats_by_source(self):
-        """Возвращает статистику по источникам"""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute('''
-                SELECT source, COUNT(*) as count, 
-                       MAX(sent_date) as last_sent 
-                FROM sent_posts 
-                GROUP BY source 
-                ORDER BY count DESC
-            ''')
-            return cursor.fetchall()
 
 class ITNewsBot:
     def __init__(self, token, channel_id):
@@ -181,173 +250,117 @@ class ITNewsBot:
         self.channel_id = channel_id
         self.db = DatabaseManager()
         
-        # RSS-ленты для парсинга
-        self.feeds = [
-            {
-                'url': 'https://habr.com/ru/rss/hubs/all/',
-                'name': 'Habr',
-                'hashtags': '#Хабр #Программирование #IT',
-                'parser': self.parse_habr_article
-            },
-            {
-                'url': 'https://www.opennet.ru/opennews/opennews_all.rss',
-                'name': 'OpenNet',
-                'hashtags': '#OpenNet #Linux #OpenSource',
-                'parser': self.parse_opennet_article
-            }
-        ]
-        
-        # User-Agent для запросов
+        # Настройки
+        self.feeds = IT_FEEDS
+        self.keywords = IT_KEYWORDS
         self.headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            'User-Agent': 'IT-News-Bot/1.0 (+https://github.com/your-repo)'
         }
     
-    def generate_content_hash(self, content):
-        """Генерирует хэш контента статьи"""
-        return hashlib.md5(content.encode('utf-8')).hexdigest()
+    def calculate_it_score(self, text):
+        """Рассчитывает IT-релевантность текста"""
+        if not text:
+            return 0
+        
+        text_lower = text.lower()
+        score = 0
+        
+        # Проверка ключевых слов
+        for keyword in self.keywords:
+            if keyword.lower() in text_lower:
+                score += 1
+        
+        # Дополнительные критерии
+        if any(tech in text_lower for tech in ['github.com', 'stackoverflow', 'gitlab']):
+            score += 2
+        
+        if 'http' in text_lower or 'www.' in text_lower:
+            score += 1
+        
+        # Длина текста (слишком короткие тексты менее информативны)
+        if len(text) > 500:
+            score += 1
+        
+        return score
     
-    def generate_post_hash(self, title, link):
-        """Генерирует хэш поста"""
-        return hashlib.md5(f"{title}{link}".encode('utf-8')).hexdigest()
+    def is_it_related(self, title, description, min_score=3):
+        """Проверяет, относится ли новость к IT"""
+        combined_text = f"{title} {description}"
+        score = self.calculate_it_score(combined_text)
+        
+        logger.debug(f"IT-оценка: {score} для '{title[:50]}...'")
+        return score >= min_score
     
-    def fetch_article_content(self, url):
-        """Получает полный текст статьи по URL"""
-        try:
-            response = requests.get(url, headers=self.headers, timeout=10)
-            response.raise_for_status()
-            return response.text
-        except Exception as e:
-            logger.error(f"Ошибка при получении статьи {url}: {e}")
-            return None
-    
-    def parse_habr_article(self, html_content):
-        """Парсит статью с Habr"""
-        try:
-            soup = BeautifulSoup(html_content, 'html.parser')
-            
-            # Удаляем ненужные элементы
-            for element in soup.find_all(['script', 'style', 'iframe', 'nav', 'header', 'footer']):
-                element.decompose()
-            
-            # Ищем основной контент
-            article_body = soup.find('div', {'class': 'tm-article-body'})
-            if not article_body:
-                article_body = soup.find('article')
-            
-            if article_body:
-                # Ограничиваем длину контента
-                text = article_body.get_text(separator='\n', strip=True)
-                # Берем первые 2000 символов для хэширования
-                return text[:2000]
-            
-            return None
-        except Exception as e:
-            logger.error(f"Ошибка парсинга Habr статьи: {e}")
-            return None
-    
-    def parse_opennet_article(self, html_content):
-        """Парсит статью с OpenNet"""
-        try:
-            soup = BeautifulSoup(html_content, 'html.parser')
-            
-            # Удаляем ненужные элементы
-            for element in soup.find_all(['script', 'style', 'iframe', 'nav', 'header', 'footer']):
-                element.decompose()
-            
-            # Ищем основной контент
-            content_div = soup.find('div', id='text')
-            if not content_div:
-                content_div = soup.find('div', class_='content')
-            
-            if content_div:
-                text = content_div.get_text(separator='\n', strip=True)
-                # Берем первые 2000 символов для хэширования
-                return text[:2000]
-            
-            return None
-        except Exception as e:
-            logger.error(f"Ошибка парсинга OpenNet статьи: {e}")
-            return None
-    
-    def fetch_new_articles(self):
-        """Получает новые статьи из RSS и проверяет их контент"""
-        new_articles = []
+    def fetch_articles(self):
+        """Получает статьи из RSS и фильтрует по IT-тематике"""
+        it_articles = []
         
         for feed_config in self.feeds:
             try:
                 logger.info(f"Проверяем RSS: {feed_config['name']}")
                 feed = feedparser.parse(feed_config['url'])
                 
-                # Берем только последние 10 статей из RSS
-                recent_entries = feed.entries[:10] if feed.entries else []
+                if not feed.entries:
+                    logger.warning(f"Нет записей в RSS: {feed_config['name']}")
+                    continue
                 
-                for entry in recent_entries:
+                for entry in feed.entries[:15]:  # Берем последние 15 записей
                     try:
-                        # Проверяем, есть ли уже такая статья
-                        existing_post = self.db.get_post_by_url(entry.link)
-                        if existing_post:
-                            # Обновляем время последнего просмотра
-                            self.db.mark_post_as_sent(
-                                existing_post['post_hash'],
-                                existing_post['title'],
-                                existing_post['link'],
-                                existing_post['source'],
-                                existing_post['content_hash']
-                            )
-                            continue
+                        title = entry.get('title', 'Без названия')
+                        description = self._clean_html(entry.get('summary', ''))
+                        link = entry.link
                         
-                        # Получаем полный текст статьи
-                        html_content = self.fetch_article_content(entry.link)
-                        if not html_content:
-                            continue
-                        
-                        # Парсим контент
-                        parsed_content = feed_config['parser'](html_content)
-                        if not parsed_content:
+                        # Проверяем IT-релевантность
+                        if not self.is_it_related(title, description):
+                            logger.debug(f"Пропускаем не IT-новость: {title[:50]}...")
                             continue
                         
                         # Генерируем хэш контента
-                        content_hash = self.generate_content_hash(parsed_content)
+                        content_for_hash = f"{title}{description[:500]}"
+                        content_hash = hashlib.md5(content_for_hash.encode()).hexdigest()
                         
-                        # Проверяем, не отправляли ли уже этот контент
+                        # Проверяем, не отправляли ли уже
                         if self.db.is_post_sent(content_hash):
-                            logger.info(f"Контент уже был отправлен ранее: {entry.title[:50]}...")
                             continue
                         
-                        # Создаем объект статьи
+                        # Рассчитываем IT-оценку
+                        it_score = self.calculate_it_score(f"{title} {description}")
+                        
+                        # Определяем категорию
+                        category = feed_config['categories'][0] if feed_config['categories'] else 'IT'
+                        
                         article = {
-                            'title': entry.title[:200],
-                            'link': entry.link,
-                            'summary': self._clean_html(entry.get('summary', ''))[:500],
+                            'title': title[:200],
+                            'link': link,
+                            'description': description[:800],
                             'source': feed_config['name'],
                             'hashtags': feed_config['hashtags'],
                             'content_hash': content_hash,
-                            'post_hash': self.generate_post_hash(entry.title, entry.link),
+                            'it_score': it_score,
+                            'category': category,
                             'published': entry.get('published', ''),
-                            'full_content': parsed_content[:1000]  # Для отладки
+                            'full_text': f"{title}. {description[:500]}"
                         }
                         
-                        new_articles.append(article)
-                        logger.info(f"Найдена новая статья: {article['title'][:50]}...")
-                        
-                        # Делаем паузу между запросами
-                        time.sleep(1)
+                        it_articles.append(article)
+                        logger.info(f"Найдена IT-новость [{category}]: {title[:50]}... (оценка: {it_score})")
                         
                     except Exception as e:
-                        logger.error(f"Ошибка обработки статьи {entry.get('link', 'unknown')}: {e}")
+                        logger.error(f"Ошибка обработки статьи: {e}")
                         continue
                 
-                # Обновляем статистику источника
-                self.db.update_source_stats(feed_config['name'], len(recent_entries))
+                time.sleep(1)  # Пауза между RSS
                 
             except Exception as e:
-                logger.error(f"Ошибка при парсинге RSS {feed_config['url']}: {e}")
+                logger.error(f"Ошибка RSS {feed_config['url']}: {e}")
                 continue
         
-        return new_articles
+        # Сортируем по IT-оценке (самые релевантные сначала)
+        it_articles.sort(key=lambda x: x['it_score'], reverse=True)
+        return it_articles
     
     def _clean_html(self, html_text):
-        """Очищает HTML-текст."""
+        """Очищает HTML-текст"""
         if not html_text:
             return ""
         try:
@@ -359,167 +372,193 @@ class ITNewsBot:
             logger.error(f"Ошибка очистки HTML: {e}")
             return html_text
     
-    def _truncate_text(self, text, max_length=500):
-        """Обрезает текст до max_length."""
-        if len(text) <= max_length:
-            return text
-        
-        truncated = text[:max_length]
-        last_sentence_end = max(
-            truncated.rfind('.'),
-            truncated.rfind('!'),
-            truncated.rfind('?')
-        )
-        
-        if last_sentence_end > 0 and last_sentence_end > max_length * 0.7:
-            truncated = truncated[:last_sentence_end + 1]
-        
-        return truncated + "..."
-    
-    def create_post(self, article):
-        """Форматируем пост для Telegram"""
-        # Обработка заголовка
+    def format_post(self, article):
+        """Форматирует пост для Telegram"""
         title = article['title']
-        if len(title) > 200:
-            title = title[:197] + "..."
+        if len(title) > 150:
+            title = title[:147] + "..."
         
-        # Обработка описания
-        summary = article['summary']
-        if not summary or summary.strip() == "":
-            summary = f"Статья '{title[:50]}...' не содержит описания."
+        description = article['description']
+        if len(description) > 600:
+            # Обрезаем до последнего полного предложения
+            truncated = description[:600]
+            last_sentence = max(truncated.rfind('.'), truncated.rfind('!'), truncated.rfind('?'))
+            if last_sentence > 400:  # Если есть нормальное предложение
+                description = truncated[:last_sentence + 1]
+            else:
+                description = truncated + "..."
         
-        # Интеллектуальное сокращение
-        summary = self._truncate_text(summary, 800)
-        
-        # Текущая дата для подписи
         current_date = datetime.now().strftime("%d.%m.%Y")
-        date_info = f"\n\n📅 Информация на {current_date}"
         
-        # Формируем финальный пост
-        post = f"""📰 {title}
+        # Добавляем эмодзи в зависимости от категории
+        emoji_map = {
+            'Программирование': '💻',
+            'Безопасность': '🔒',
+            'DevOps': '⚙️',
+            'Linux': '🐧',
+            'Open Source': '📖',
+            'Technology': '🚀'
+        }
+        
+        emoji = emoji_map.get(article['category'], '📰')
+        
+        post = f"""{emoji} {title}
 
-💡 *Источник:* {article['source']}
+📊 *IT-релевантность:* {article['it_score']}/10
+🏷️ *Категория:* {article['category']}
+📡 *Источник:* {article['source']}
 
-💭 *Краткое содержание:*
-{summary}
+📝 *Описание:*
+{description}
 
-📖 [Читать статью полностью]({article['link']})
+🔗 [Читать полностью]({article['link']})
 
-{date_info}
+📅 *Дата публикации:* {current_date}
 
-{article.get('hashtags', '#ITНовости #Технологии')}"""
+{article['hashtags']}"""
         
         return post
     
     async def send_post(self, article):
-        """Отправляем пост в канал"""
+        """Отправляет пост в канал"""
         try:
-            post_content = self.create_post(article)
+            post_content = self.format_post(article)
             
             await self.bot.send_message(
                 chat_id=self.channel_id,
                 text=post_content,
                 parse_mode='Markdown',
-                disable_web_page_preview=True
+                disable_web_page_preview=False,
+                disable_notification=False
             )
             
-            # Сохраняем пост в базу данных
-            post_id = self.db.mark_post_as_sent(
-                article['post_hash'],
+            # Сохраняем в БД
+            post_id = self.db.save_post(
+                article['content_hash'],
                 article['title'],
                 article['link'],
                 article['source'],
-                article['content_hash']
+                article['category'],
+                article['it_score']
             )
             
-            logger.info(f"Успешно отправлена статья: {article['title'][:50]}...")
+            if post_id:
+                logger.info(f"Отправлена IT-новость: {article['title'][:50]}...")
+            else:
+                logger.warning(f"Пост отправлен, но не сохранен (дубликат?): {article['title'][:50]}...")
+            
             return True
             
         except TelegramError as e:
-            logger.error(f"Ошибка отправки в Telegram: {e}")
+            logger.error(f"Ошибка Telegram: {e}")
             return False
         except Exception as e:
-            logger.error(f"Неизвестная ошибка: {e}")
+            logger.error(f"Ошибка отправки: {e}")
             return False
     
     async def run(self):
-        """Главная функция для запуска бота."""
-        logger.info("Начинаем поиск новых статей...")
+        """Основной метод запуска"""
+        logger.info("=== Начало поиска IT-новостей ===")
         
         try:
-            # Получаем новые статьи
-            new_articles = self.fetch_new_articles()
+            # Получаем и фильтруем статьи
+            articles = self.fetch_articles()
             
-            if not new_articles:
-                logger.info("Нет новых статей для отправки.")
+            if not articles:
+                logger.info("Новых IT-новостей не найдено.")
                 
-                # Отправляем статистику раз в 24 часа
-                total_posts = self.db.get_total_sent_posts()
-                last_check_file = 'last_stats_sent.txt'
+                # Раз в день отправляем статистику
+                stats = self.db.get_stats()
+                last_stats = self._get_last_stats_time()
                 
-                try:
-                    with open(last_check_file, 'r') as f:
-                        last_sent = datetime.fromisoformat(f.read().strip())
-                        hours_since_last = (datetime.now() - last_sent).total_seconds() / 3600
-                except:
-                    hours_since_last = 25
-                
-                if hours_since_last >= 24:
-                    try:
-                        stats = self.db.get_stats_by_source()
-                        stats_text = f"📊 *Статистика бота*\n\n"
-                        stats_text += f"Всего отправлено постов: {total_posts}\n\n"
-                        
-                        for stat in stats:
-                            stats_text += f"{stat['source']}: {stat['count']} постов\n"
-                        
-                        stats_text += f"\nПоследняя проверка: {datetime.now().strftime('%d.%m.%Y %H:%M')}"
-                        
-                        await self.bot.send_message(
-                            chat_id=self.channel_id,
-                            text=stats_text,
-                            parse_mode='Markdown'
-                        )
-                        
-                        with open(last_check_file, 'w') as f:
-                            f.write(datetime.now().isoformat())
-                        
-                    except Exception as e:
-                        logger.error(f"Ошибка отправки статистики: {e}")
+                if last_stats is None or (datetime.now() - last_stats).days >= 1:
+                    stats_text = self._format_stats(stats)
+                    await self._send_stats(stats_text)
+                    self._save_stats_time()
                 
                 return
             
-            # Отправляем новые статьи (максимум 2 за раз)
+            logger.info(f"Найдено {len(articles)} IT-новостей")
+            
+            # Отправляем лучшие новости (максимум 3 за раз)
             sent_count = 0
-            for article in new_articles[:2]:
-                success = await self.send_post(article)
-                if success:
-                    sent_count += 1
-                    # Пауза между отправками
-                    await asyncio.sleep(2)
+            for article in articles[:3]:
+                if article['it_score'] >= 3:  # Минимальный порог
+                    success = await self.send_post(article)
+                    if success:
+                        sent_count += 1
+                        await asyncio.sleep(3)  # Пауза между отправками
             
-            logger.info(f"Отправлено {sent_count} новых статей.")
+            logger.info(f"Отправлено {sent_count} IT-новостей")
             
-            # Периодически чистим старые записи
-            if self.db.get_total_sent_posts() % 100 == 0:
-                self.db.cleanup_old_posts(days_to_keep=60)
+            # Периодическая очистка БД
+            if stats['total'] % 100 == 0:
+                deleted = self.db.cleanup_old_posts()
+                if deleted:
+                    logger.info(f"Очищено {deleted} старых записей")
             
         except Exception as e:
-            logger.error(f"Критическая ошибка в run(): {e}")
+            logger.error(f"Критическая ошибка: {e}")
+    
+    async def _send_stats(self, stats_text):
+        """Отправляет статистику в канал"""
+        try:
+            await self.bot.send_message(
+                chat_id=self.channel_id,
+                text=stats_text,
+                parse_mode='Markdown'
+            )
+        except Exception as e:
+            logger.error(f"Ошибка отправки статистики: {e}")
+    
+    def _format_stats(self, stats):
+        """Форматирует статистику"""
+        stats_text = f"""📈 *Статистика IT-News Bot*
 
-# --- Flask маршруты ---
+📊 Всего опубликовано: *{stats['total']}* IT-новостей
+
+📡 *По источникам:*
+"""
+        for source in stats['sources'][:5]:  # Топ-5 источников
+            stats_text += f"• {source['source']}: {source['count']}\n"
+        
+        if stats['categories']:
+            stats_text += "\n🏷️ *По категориям:*\n"
+            for cat in stats['categories'][:5]:
+                stats_text += f"• {cat['category']}: {cat['count']}\n"
+        
+        stats_text += f"\n⏰ *Обновлено:* {datetime.now().strftime('%d.%m.%Y %H:%M')}"
+        return stats_text
+    
+    def _get_last_stats_time(self):
+        """Получает время последней отправки статистики"""
+        try:
+            with open('.last_stats', 'r') as f:
+                return datetime.fromisoformat(f.read().strip())
+        except:
+            return None
+    
+    def _save_stats_time(self):
+        """Сохраняет время отправки статистики"""
+        try:
+            with open('.last_stats', 'w') as f:
+                f.write(datetime.now().isoformat())
+        except Exception as e:
+            logger.error(f"Ошибка сохранения времени статистики: {e}")
+
+# --- Flask приложение для Railway ---
 is_running = False
 
 @app.route('/health')
 def health():
-    """Маршрут для проверки работоспособности приложения"""
+    """Проверка работоспособности"""
     try:
         db = DatabaseManager()
-        post_count = db.get_total_sent_posts()
+        stats = db.get_stats()
         return {
             'status': 'healthy',
-            'database': 'connected',
-            'total_posts': post_count,
+            'bot': 'IT-News Bot',
+            'total_posts': stats['total'],
             'timestamp': datetime.now().isoformat()
         }, 200
     except Exception as e:
@@ -527,85 +566,106 @@ def health():
 
 @app.route('/run')
 def run_bot():
-    """Основной маршрут для запуска бота (вызывается Cron Job)"""
+    """Запуск бота (для Cron Job)"""
     global is_running
     
     if is_running:
-        logger.info("Задача уже выполняется, пропускаем.")
-        return {'status': 'busy', 'message': 'Задача уже выполняется'}, 429
+        logger.info("Бот уже работает, пропускаем...")
+        return {'status': 'busy', 'message': 'Бот уже запущен'}, 429
     
     is_running = True
     try:
-        logger.info("Запуск бота...")
+        logger.info("=== Запуск IT-News Bot ===")
         bot = ITNewsBot(BOT_TOKEN, CHANNEL_ID)
         
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         loop.run_until_complete(bot.run())
         
-        # Получаем статистику
-        db = DatabaseManager()
-        stats = {
-            'status': 'completed',
-            'message': 'Проверка новых статей завершена',
-            'total_posts': db.get_total_sent_posts(),
+        stats = bot.db.get_stats()
+        result = {
+            'status': 'success',
+            'message': 'Проверка IT-новостей завершена',
+            'stats': stats,
             'timestamp': datetime.now().isoformat()
         }
         
-        logger.info(f"Задача выполнена. Статистика: {stats}")
-        return stats, 200
+        logger.info(f"Завершено. Результат: {result}")
+        return result, 200
         
     except Exception as e:
-        logger.error(f"Критическая ошибка: {e}")
+        logger.error(f"Ошибка запуска: {e}")
         return {'status': 'error', 'message': str(e)}, 500
     finally:
         is_running = False
 
 @app.route('/stats')
 def get_stats():
-    """Маршрут для получения статистики"""
+    """API для получения статистики"""
     try:
         db = DatabaseManager()
-        total_posts = db.get_total_sent_posts()
-        source_stats = db.get_stats_by_source()
-        
-        stats = {
-            'total_posts': total_posts,
-            'sources': [
-                {
-                    'name': stat['source'],
-                    'count': stat['count'],
-                    'last_sent': stat['last_sent']
-                }
-                for stat in source_stats
-            ],
+        stats = db.get_stats()
+        return {
+            'status': 'success',
+            'data': stats,
             'timestamp': datetime.now().isoformat()
-        }
-        
-        return stats, 200
+        }, 200
     except Exception as e:
         return {'status': 'error', 'message': str(e)}, 500
 
 @app.route('/')
 def index():
-    """Главная страница (для проверки работы)"""
+    """Главная страница"""
     return """
-    <h1>IT News Telegram Bot</h1>
-    <p>Бот для автоматической отправки IT-новостей в Telegram-канал.</p>
-    <p>Доступные эндпоинты:</p>
-    <ul>
-        <li><a href="/health">/health</a> - Проверка работоспособности</li>
-        <li><a href="/stats">/stats</a> - Статистика бота</li>
-        <li><a href="/run">/run</a> - Запуск бота (для Cron Job)</li>
-    </ul>
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="UTF-8">
+        <title>IT-News Telegram Bot</title>
+        <style>
+            body { font-family: Arial, sans-serif; margin: 40px; }
+            h1 { color: #333; }
+            .container { max-width: 800px; margin: 0 auto; }
+            .endpoint { background: #f5f5f5; padding: 10px; margin: 10px 0; border-radius: 5px; }
+            code { background: #eee; padding: 2px 5px; border-radius: 3px; }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>🤖 IT-News Telegram Bot</h1>
+            <p>Бот публикует <strong>только IT-новости</strong> с фильтрацией по релевантности.</p>
+            
+            <h2>Доступные эндпоинты:</h2>
+            <div class="endpoint">
+                <strong>GET</strong> <code>/health</code> - Проверка работоспособности
+            </div>
+            <div class="endpoint">
+                <strong>GET</strong> <code>/run</code> - Запуск бота (для Cron Job)
+            </div>
+            <div class="endpoint">
+                <strong>GET</strong> <code>/stats</code> - Статистика бота
+            </div>
+            
+            <h2>📡 Источники новостей:</h2>
+            <ul>
+                <li>Habr (Programming, Security, DevOps)</li>
+                <li>OpenNet (Linux, Open Source)</li>
+                <li>Hacker News</li>
+                <li>Reddit (Programming, Linux)</li>
+            </ul>
+            
+            <p><em>Бот фильтрует новости по IT-тематике и публикует только релевантные.</em></p>
+        </div>
+    </body>
+    </html>
     """
 
 if __name__ == '__main__':
+    # Инициализация
+    logger.info("Инициализация IT-News Bot...")
+    
     port = int(os.environ.get("PORT", 8080))
-    logger.info(f"Запуск приложения на порту {port}")
+    logger.info(f"Запуск сервера на порту {port}")
     
-    # Инициализируем базу данных при старте
-    db = DatabaseManager()
-    logger.info(f"База данных инициализирована. Всего постов: {db.get_total_sent_posts()}")
-    
-    app.run(host='0.0.0.0', port=port)
+    # Запуск Flask
+    app.run(host='0.0.0.0', port=port, debug=False)
