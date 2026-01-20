@@ -249,7 +249,7 @@ is_running = False
 def health():
     return "Bot is alive", 200
 
-@app.route('/run')
+@app.route('/')
 def run_bot():
     global is_running
     if is_running:
